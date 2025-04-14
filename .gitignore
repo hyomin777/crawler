@@ -1,3 +1,6 @@
 __pycache__
 images
 cookies.txt
+cookie.txt
+*.jpg
+*.json

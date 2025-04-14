@@ -2,9 +2,9 @@ import os
 import json
 import time
 import random
+import argparse
 import requests
 from tqdm import tqdm
-import argparse
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -42,7 +42,7 @@ class PixivCrawler:
 
         # Configure retry strategy
         retry_strategy = Retry(
-            total=5,  # Maximum number of retries
+            total=3,  # Maximum number of retries
             backoff_factor=1,  # Wait 1, 2, 4, 8, 16 seconds between retries
             # Retry on these status codes
             status_forcelist=[429, 500, 502, 503, 504]
@@ -169,7 +169,7 @@ class PixivCrawler:
 
         return None, None
 
-    def search_and_download(self, tags, max_images=100, mode='s_tag_full', rating='all'):
+    def search_and_download(self, tags, max_images, mode='s_tag', rating='all'):
         """
         Search and download images by tags
 
@@ -178,8 +178,8 @@ class PixivCrawler:
             max_images (int): Maximum number of images to download
             days (int): Number of days to look back
             mode (str): Search mode
-                - 's_tag_full': All tags must match
                 - 's_tag': Any tag can match
+                - 's_tag_full': All tags must match
             rating (str): Content rating
                 - 'all': All ratings
                 - 'safe': Safe for work
@@ -257,7 +257,7 @@ class PixivCrawler:
                     consecutive_errors += 1
 
                     # If we get too many errors, rotate cookie
-                    if consecutive_errors >= 2:
+                    if consecutive_errors >= 1:
                         self.rotate_cookie()
                         consecutive_errors = 0
 
@@ -276,7 +276,7 @@ def main():
                         help='Tags to search for (space-separated)')
     parser.add_argument(
         '--output-dir', default='images', help='Output directory')
-    parser.add_argument('--max-images', type=int, default=100,
+    parser.add_argument('--max-images', type=int, default=100000,
                         help='Maximum number of images to download')
     parser.add_argument('--mode', choices=['s_tag_full', 's_tag'], default='s_tag_full',
                         help='Search mode: s_tag_full (all tags must match) or s_tag (any tag can match)')

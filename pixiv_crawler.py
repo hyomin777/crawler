@@ -82,92 +82,97 @@ class PixivCrawler:
         with open(metadata_file, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, ensure_ascii=False, indent=2)
 
-    def download_image(self, image_url, image_id, metadata):
+    def download_image(self, image_url, image_id, metadata, page_index=0):
         try:
-            # Create filename from title and ID
-            filename = f"{image_id}.jpg"
+            filename = f"{image_id}_p{page_index}.jpg"
             filepath = os.path.join(self.output_dir, filename)
 
-            # Skip if file already exists
             if os.path.exists(filepath):
                 return False
 
-            # Download image
             response = self.session.get(image_url, stream=True)
             response.raise_for_status()
 
-            # Save image
             with open(filepath, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
 
-            # Save metadata
             metadata['filename'] = filename
-            self.save_metadata(image_id, metadata)
+            self.save_metadata(f"{image_id}_p{page_index}", metadata)
 
             return True
 
         except Exception as e:
             print(f"Error downloading {image_url}: {str(e)}")
             return False
-
+    
     def get_image_details(self, illust_id, max_retries=3):
-        """Get image details with retry logic"""
+        """Get image details with retry logic (handles multi-page works)"""
         for attempt in range(max_retries):
             try:
                 self.rate_limit()
-                # Get illustration details
-                detail_url = f"https://www.pixiv.net/ajax/illust/{illust_id}"
+                detail_url = f"https://www.pixiv.net/ajax/illust/{illust_id}/pages"
                 response = self.session.get(detail_url)
                 response.raise_for_status()
-                data = response.json()
+                pages = response.json()
 
-                if data.get('error'):
-                    print(
-                        f"Error getting image details: {data['error']['message']}")
-                    return None, None
+                # Get illustration metadata
+                self.rate_limit()
+                meta_url = f"https://www.pixiv.net/ajax/illust/{illust_id}"
+                meta_response = self.session.get(meta_url)
+                meta_response.raise_for_status()
+                meta_data = meta_response.json()
 
-                # Extract original image URL and metadata
-                urls = data.get('body', {}).get('urls', {})
-                if not urls:
-                    return None, None
+                if meta_data.get('error'):
+                    print(f"Error getting metadata: {meta_data['error']['message']}")
+                    return [], []
 
-                # Prepare metadata
-                metadata = {
+                meta_body = meta_data['body']
+                base_metadata = {
                     'id': illust_id,
-                    'title': data['body'].get('title', ''),
-                    'user_id': data['body'].get('userId', ''),
-                    'user_name': data['body'].get('userName', ''),
-                    'tags': [tag['tag'] for tag in data['body'].get('tags', {}).get('tags', [])],
-                    'create_date': data['body'].get('createDate', ''),
-                    'width': data['body'].get('width', 0),
-                    'height': data['body'].get('height', 0),
-                    'page_count': data['body'].get('pageCount', 1),
-                    'bookmark_count': data['body'].get('bookmarkCount', 0),
-                    'like_count': data['body'].get('likeCount', 0),
-                    'view_count': data['body'].get('viewCount', 0),
-                    'comment_count': data['body'].get('commentCount', 0),
-                    'is_original': data['body'].get('isOriginal', False),
-                    'is_r18': data['body'].get('xRestrict', 0) > 0,
-                    'url': urls.get('original', '')
+                    'title': meta_body.get('title', ''),
+                    'user_id': meta_body.get('userId', ''),
+                    'user_name': meta_body.get('userName', ''),
+                    'tags': [tag['tag'] for tag in meta_body.get('tags', {}).get('tags', [])],
+                    'create_date': meta_body.get('createDate', ''),
+                    'width': meta_body.get('width', 0),
+                    'height': meta_body.get('height', 0),
+                    'page_count': meta_body.get('pageCount', 1),
+                    'bookmark_count': meta_body.get('bookmarkCount', 0),
+                    'like_count': meta_body.get('likeCount', 0),
+                    'view_count': meta_body.get('viewCount', 0),
+                    'comment_count': meta_body.get('commentCount', 0),
+                    'is_original': meta_body.get('isOriginal', False),
+                    'is_r18': meta_body.get('xRestrict', 0) > 0,
                 }
 
-                return urls.get('original'), metadata
+                image_urls = []
+                metadata_list = []
+
+                for i, page in enumerate(pages.get('body', [])):
+                    image_url = page.get('urls', {}).get('original', '')
+                    if not image_url:
+                        continue
+                    image_urls.append(image_url)
+
+                    meta_copy = dict(base_metadata)
+                    meta_copy['page'] = i
+                    metadata_list.append(meta_copy)
+
+                return image_urls, metadata_list
 
             except requests.exceptions.RequestException as e:
                 if attempt < max_retries - 1:
                     wait_time = (2 ** attempt) + random.uniform(0, 1)
-                    print(
-                        f"Retrying in {wait_time:.1f} seconds... (Attempt {attempt + 1}/{max_retries})")
+                    print(f"Retrying in {wait_time:.1f} seconds... (Attempt {attempt + 1}/{max_retries})")
                     time.sleep(wait_time)
                     if "429" in str(e):
                         self.rotate_cookie()
                 else:
-                    print(
-                        f"Error getting image details after {max_retries} attempts: {str(e)}")
-                    return None, None
+                    print(f"Failed to get image details after {max_retries} attempts: {str(e)}")
+                    return [], []
 
-        return None, None
+        return [], []
 
     def search_and_download(self, tags, max_images, mode='s_tag', rating='all'):
         """
@@ -229,25 +234,21 @@ class PixivCrawler:
                             continue
 
                         # Get image URL and metadata
-                        image_url, metadata = self.get_image_details(
-                            illust['id'])
-                        if not image_url or not metadata:
+                        image_urls, metadata_list = self.get_image_details(illust['id'])
+
+                        if not image_urls or not metadata_list:
                             continue
 
-                        if rating == 'r18' and not metadata['is_r18']:
-                            continue
+                        for page_index, (image_url, metadata) in enumerate(zip(image_urls, metadata_list)):
+                            if self.download_image(image_url, illust['id'], metadata, page_index):
+                                downloaded_count += 1
+                                pbar.update(1)
+                                consecutive_errors = 0
 
-                        elif rating == 'safe' and metadata['is_r18']:
-                            continue
+                            if downloaded_count >= max_images:
+                                break
 
-                        # Download image
-                        if self.download_image(image_url, illust['id'], metadata):
-                            downloaded_count += 1
-                            pbar.update(1)
-                            consecutive_errors = 0  # Reset error count on success
-
-                        # Respect rate limits
-                        time.sleep(3)
+                            time.sleep(2)
                     
                     page += 1
                     time.sleep(4)  # Wait between pages
@@ -278,7 +279,7 @@ def main():
         '--output-dir', default='images', help='Output directory')
     parser.add_argument('--max-images', type=int, default=100000,
                         help='Maximum number of images to download')
-    parser.add_argument('--mode', choices=['s_tag_full', 's_tag'], default='s_tag_full',
+    parser.add_argument('--mode', choices=['s_tag_full', 's_tag'], default='s_tag',
                         help='Search mode: s_tag_full (all tags must match) or s_tag (any tag can match)')
     parser.add_argument('--rating', choices=['all', 'safe', 'r18'], default='all',
                         help='Content rating: all, safe, or r18')

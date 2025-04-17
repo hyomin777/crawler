@@ -1,6 +1,7 @@
 __pycache__
 images
-cookies.txt
-cookie.txt
+*.txt
 *.jpg
 *.json
+venv
+danbooru_images
